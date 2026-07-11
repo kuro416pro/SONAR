@@ -4,7 +4,7 @@ import {
   Plus, X, MapPin, ArrowRight, Trash2, ChevronLeft, ChevronRight,
   Check, Loader2, Clock, Home, Pencil, Image as ImageIcon,
   Bell, BellOff, BellRing, Volume2, VolumeX, CalendarPlus,
-  Save, Star, Repeat, Bus, Navigation, RefreshCw, Moon, Cloud, CloudOff,
+  Save, Star, Repeat, Navigation, RefreshCw, Moon, Cloud, CloudOff,
   Sun, CloudRain, CloudSnow, CloudLightning, CloudFog, CloudDrizzle,
   LogIn, LogOut, UserPlus,
 } from "lucide-react";
@@ -178,8 +178,6 @@ function leaveInfo(ev, now) {
 }
 
 /* ---------- 乗換案内リンク ---------- */
-const gmapsUrl = (from, to) =>
-  `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(from)}&destination=${encodeURIComponent(to)}&travelmode=transit`;
 const yahooUrl = (from, to) =>
   `https://transit.yahoo.co.jp/search/result?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
 
@@ -217,33 +215,6 @@ async function extractEventsFromImage(base64, mediaType) {
   const clean = text.replace(/```json/g, "").replace(/```/g, "").trim();
   const parsed = JSON.parse(clean);
   return Array.isArray(parsed) ? parsed : [parsed];
-}
-
-/* ---------- 代表的な乗換経路を見積もる（Claude API） ----------
-   注意：一般的な知識ベースの“目安”。当日の発車時刻・遅延は反映しない。 */
-async function suggestRoute(from, to) {
-  const prompt =
-    `日本の公共交通機関で「${from}」から「${to}」への現在の経路を1つ、Web検索で確認して答えてください。` +
-    "電車・バス・徒歩を含めてよい。実在する路線名・駅名・バス系統を使うこと。" +
-    "最後に、経路をJSONだけで（前置き・Markdownなしで）出力してください。" +
-    '形式: {"legs":[{"mode":"train"|"bus"|"walk","line":"路線名/系統 or 徒歩","from":"地点","to":"地点","minutes":整数}],' +
-    '"transfers":乗換回数(整数),"totalMinutes":合計所要分(整数),"note":"補足(任意/短く)"}';
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1200,
-      messages: [{ role: "user", content: [{ type: "text", text: prompt }] }],
-      tools: [{ type: "web_search_20250305", name: "web_search" }],
-    }),
-  });
-  if (!res.ok) throw new Error("api");
-  const data = await res.json();
-  const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-  const m = text.match(/\{[\s\S]*\}/); // 本文中からJSON部分を抽出
-  const clean = (m ? m[0] : text).replace(/```json/g, "").replace(/```/g, "").trim();
-  return JSON.parse(clean);
 }
 
 /* ---------- 天気（Open-Meteo：APIキー不要・CORS対応） ---------- */
@@ -520,7 +491,7 @@ export default function App() {
       return next.length ? next : remaining.map((c) => c.id);
     });
   };
-  const [home, setHome] = useState(""); // 出発地（未設定なら登録を促す）
+  const [home, setHome] = useState("さいたま新都心駅");
   const [selectedDate, setSelectedDate] = useState(t0);
   const [view, setView] = useState({ y: today.getFullYear(), m: today.getMonth() });
 
@@ -866,9 +837,6 @@ function Toast({ t, onDismiss }) {
    ============================================================ */
 function RouteModal({ ev, home, updateEvent, onClose }) {
   const [travelMin, setTravelMin] = useState(Number(ev.travelMin) || 30);
-  const [route, setRoute] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
@@ -883,17 +851,6 @@ function RouteModal({ ev, home, updateEvent, onClose }) {
     arrive = new Date(start.getTime() - BUFFER_MIN * 60000);
     depart = new Date(arrive.getTime() - travelMin * 60000);
   }
-
-  const runAI = async () => {
-    if (!home) { setError("先に出発ゲートで出発地を登録してください。"); return; }
-    setError(""); setLoading(true); setRoute(null);
-    try {
-      const r = await suggestRoute(home, ev.location);
-      setRoute(r);
-    } catch (e) {
-      setError("経路の見積もりに失敗しました。もう一度お試しください。");
-    } finally { setLoading(false); }
-  };
 
   const applyTravel = () => updateEvent(ev.id, { travelMin: Number(travelMin) || 0 });
 
@@ -916,7 +873,7 @@ function RouteModal({ ev, home, updateEvent, onClose }) {
         {start ? (
           <div className="hub-timeline">
             <TLRow time={hhmm(depart)} label="出発" sub={home} node="start" />
-            <TLRow time="" label={`乗車 約${travelMin}分`} sub={route ? `${route.transfers ?? 0}回乗換` : "所要時間は下で調整"} node="mid" mid />
+            <TLRow time="" label={`乗車 約${travelMin}分`} sub="所要時間は下で調整" node="mid" mid />
             <TLRow time={hhmm(arrive)} label="到着" sub={ev.location} node="mid" />
             <TLRow time="" label={`支度・徒歩 ${BUFFER_MIN}分`} sub="" node="mid" mid />
             <TLRow time={hhmm(start)} label="予定開始" sub={ev.title} node="end" />
@@ -938,49 +895,15 @@ function RouteModal({ ev, home, updateEvent, onClose }) {
           </div>
         </div>
 
-        {/* Web検索による経路の目安 */}
-        <button className="hub-primary full" onClick={runAI} disabled={loading}>
-          {loading ? <><Loader2 size={15} className="spin" /> 経路を調べています…</> : <><Train size={15} /> 経路を調べる（Web検索）</>}
-        </button>
-        {error && <div className="hub-note err" style={{ marginTop: 10 }}>{error}</div>}
-
-        {route && (
-          <div className="hub-ai-route">
-            <div className="hub-ai-summary">
-              <span>所要 約{route.totalMinutes}分</span>
-              <span>乗換 {route.transfers ?? 0}回</span>
-              {Number(route.totalMinutes) ? (
-                <button className="hub-apply-mini" onClick={() => setTravelMin(Number(route.totalMinutes))}>
-                  この所要を反映
-                </button>
-              ) : null}
-            </div>
-            <ul className="hub-legs">
-              {(route.legs || []).map((lg, i) => (
-                <li key={i} className={"hub-leg" + (lg.mode === "walk" ? " walk" : lg.mode === "bus" ? " bus" : "")}>
-                  <span className="hub-leg-ic">
-                    {lg.mode === "walk" ? "徒歩" : lg.mode === "bus" ? <Bus size={13} /> : <Train size={13} />}
-                  </span>
-                  <span className="hub-leg-main">
-                    <span className="hub-leg-line">{lg.line}</span>
-                    <span className="hub-leg-od">{lg.from} → {lg.to}</span>
-                  </span>
-                  <span className="hub-leg-mins">{lg.minutes}分</span>
-                </li>
-              ))}
-            </ul>
-            {route.note && <div className="hub-ai-memo">{route.note}</div>}
-            <div className="hub-ai-note">
-              ※ Web検索に基づく経路の目安です。正確な発車時刻・遅延・運休・運賃は下のYahoo!乗換で確認してください。
-            </div>
-          </div>
-        )}
-
-        <div className="hub-modal-ext">
-          正確な発車時刻を確認：
-          <a href={gmapsUrl(home, ev.location)} target="_blank" rel="noreferrer">Google</a>
-          <a href={yahooUrl(home, ev.location)} target="_blank" rel="noreferrer">Yahoo!乗換</a>
-        </div>
+        {/* Yahoo!乗換案内をそのまま開く */}
+        <a
+          className="hub-primary full"
+          href={yahooUrl(home, ev.location)}
+          target="_blank"
+          rel="noreferrer"
+        >
+          <Train size={15} /> 経路を調べる（Yahoo!乗換案内）
+        </a>
       </div>
     </div>
   );
@@ -1212,31 +1135,11 @@ function DepartureGate({ ev, now, home, setHome, onRoute, categories = [], big }
   const [editHome, setEditHome] = useState(false);
   const info = ev ? leaveInfo(ev, now) : null;
 
-  const HomeField = () => (
-    !editHome ? (
-      <button className={"hub-origin" + (home ? "" : " unset")} onClick={() => setEditHome(true)}
-        title="出発地を登録・変更">
-        <Home size={13} /> {home || "出発地を登録"}
-      </button>
-    ) : (
-      <input
-        className="hub-origin-input" autoFocus defaultValue={home}
-        placeholder="駅名・地名（例：田端駅）"
-        onBlur={(e) => { setHome(e.target.value.trim() || home); setEditHome(false); }}
-        onKeyDown={(e) => { if (e.key === "Enter") { setHome(e.target.value.trim() || home); setEditHome(false); } }}
-      />
-    )
-  );
-
   if (!ev || !info) {
     return (
       <div className={"hub-gate empty" + (big ? " big" : "")}>
         <div className="hub-gate-eyebrow">出発ゲート</div>
         <div className="hub-gate-empty">次に出かける予定はありません。ゆっくりどうぞ。</div>
-        <div className="hub-gate-route" style={{ marginTop: 10 }}>
-          <HomeField />
-          {!home && <span className="hub-gate-hint">← いつもの出発地を登録しておくと、出発時刻を計算できます</span>}
-        </div>
       </div>
     );
   }
@@ -1261,7 +1164,17 @@ function DepartureGate({ ev, now, home, setHome, onRoute, categories = [], big }
             {ev.title}
           </div>
           <div className="hub-gate-route">
-            <HomeField />
+            {!editHome ? (
+              <button className="hub-origin" onClick={() => setEditHome(true)} title="出発地を変更">
+                <Home size={13} /> {home}
+              </button>
+            ) : (
+              <input
+                className="hub-origin-input" autoFocus defaultValue={home}
+                onBlur={(e) => { setHome(e.target.value || home); setEditHome(false); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { setHome(e.target.value || home); setEditHome(false); } }}
+              />
+            )}
             <ArrowRight size={14} className="hub-arrow" />
             <span className="hub-dest"><MapPin size={13} /> {ev.location || "行き先未設定"}</span>
           </div>
@@ -1784,21 +1697,7 @@ function ManualForm({ defaultDate, initial, home, categories = [], onSubmit, onC
     title: "", date: defaultDate, start: "", end: "", location: "", travelMin: 30, remind: 30, repeat: "none", cat: DEFAULT_CAT, notes: "",
   });
   const [asTemplate, setAsTemplate] = useState(false);
-  const [lk, setLk] = useState({ state: "idle", transit: null });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
-
-  /* 電車・バスの所要時間の「目安」をWeb検索で調べる（車の計算は精度が出ないため廃止） */
-  const lookupTravel = async () => {
-    if (!f.location.trim() || !home) return;
-    setLk({ state: "loading", transit: null });
-    try {
-      const r = await suggestRoute(home, f.location);
-      const t = Number(r.totalMinutes) || null;
-      setLk(t ? { state: "done", transit: t } : { state: "error", transit: null });
-    } catch (e) {
-      setLk({ state: "error", transit: null });
-    }
-  };
 
   const submit = () => {
     if (!f.title.trim()) return;
@@ -1842,35 +1741,6 @@ function ManualForm({ defaultDate, initial, home, categories = [], onSubmit, onC
                 onChange={(e) => set("travelMin", e.target.value)} />
               <span>分</span>
             </div>
-          </div>
-          <div className="hub-lookup">
-            {!home ? (
-              <p className="hub-lookup-note">
-                移動時間を自動で調べるには、出発ゲートで出発地を登録してください。
-              </p>
-            ) : (
-              <>
-                <button className="hub-ghostbtn wide" onClick={lookupTravel}
-                  disabled={!f.location.trim() || lk.state === "loading"}>
-                  {lk.state === "loading"
-                    ? <><Loader2 size={14} className="spin" /> 調べています…</>
-                    : <><Train size={14} /> {home} からの所要時間を調べる（電車・バス）</>}
-                </button>
-                {lk.state === "error" && (
-                  <div className="hub-note err">所要時間を取得できませんでした。手入力してください。</div>
-                )}
-                {lk.state === "done" && lk.transit != null && (
-                  <div className="hub-lookup-res">
-                    <button className="hub-lookup-opt" onClick={() => set("travelMin", lk.transit)}>
-                      <Train size={13} /> 電車・バス 約{lk.transit}分 <span className="hub-lookup-apply">反映</span>
-                    </button>
-                    <p className="hub-lookup-note">
-                      ※ Web検索による目安です。正確な時刻は乗換案内で確認してください。
-                    </p>
-                  </div>
-                )}
-              </>
-            )}
           </div>
           <label className="hub-di-remind">
             <Bell size={13} /> リマインド
@@ -2241,8 +2111,6 @@ const CSS = `
 .hub-origin{ background:#0f1621; border:1px solid #2a3648; color:#c3ccd8; padding:5px 10px;
   border-radius:8px; cursor:pointer; font-family:var(--sans); font-size:13px; }
 .hub-origin:hover{ border-color:var(--accent); }
-.hub-origin.unset{ border-style:dashed; border-color:var(--soon); color:#EBD9A8; }
-.hub-gate-hint{ font-size:11px; color:#7d8ba0; }
 .hub-origin-input{ background:#0f1621; border:1px solid var(--accent); color:#EDE7DA; padding:5px 10px;
   border-radius:8px; font-family:var(--sans); font-size:13px; width:150px; }
 .hub-arrow{ color:#5f6f84; }
