@@ -14,7 +14,7 @@ import {
    （Supabase → Project Settings → API で確認）
    ============================================================ */
 const SUPABASE_URL = "https://qyrmhpehrsurzskmvppn.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_JhpfS3QiuSyVG1AkttrE9g_Z83EOAV7";
+const SUPABASE_ANON_KEY = "sb_publishable_JhpfS3QiuSyVGlAkttrE9g_Z83EOAV7";
 const SB_CONFIGURED =
   /^https:\/\/.+\.supabase\.co/.test(SUPABASE_URL) &&
   !!SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.startsWith("YOUR");
@@ -271,15 +271,6 @@ async function geocodePlace(name) {
   const hit = d.results && d.results[0];
   return hit ? { name: hit.name, lat: hit.latitude, lng: hit.longitude, admin: hit.admin1 || "" } : null;
 }
-/* 地図ルーティング（OSRM・キー不要）：車での所要分。座標 {lat,lng} */
-async function osrmMinutes(from, to) {
-  const url = `https://router.project-osrm.org/route/v1/driving/${from.lng},${from.lat};${to.lng},${to.lat}?overview=false`;
-  const r = await fetch(url);
-  if (!r.ok) throw new Error("osrm");
-  const d = await r.json();
-  const sec = d.routes && d.routes[0] && d.routes[0].duration;
-  return sec ? Math.round(sec / 60) : null;
-}
 function weatherInfo(code) {
   const map = [
     { codes: [0], Icon: Sun, label: "快晴", color: "#C98A2B" },
@@ -529,7 +520,7 @@ export default function App() {
       return next.length ? next : remaining.map((c) => c.id);
     });
   };
-  const [home, setHome] = useState("さいたま新都心駅");
+  const [home, setHome] = useState(""); // 出発地（未設定なら登録を促す）
   const [selectedDate, setSelectedDate] = useState(t0);
   const [view, setView] = useState({ y: today.getFullYear(), m: today.getMonth() });
 
@@ -894,6 +885,7 @@ function RouteModal({ ev, home, updateEvent, onClose }) {
   }
 
   const runAI = async () => {
+    if (!home) { setError("先に出発ゲートで出発地を登録してください。"); return; }
     setError(""); setLoading(true); setRoute(null);
     try {
       const r = await suggestRoute(home, ev.location);
@@ -1220,11 +1212,31 @@ function DepartureGate({ ev, now, home, setHome, onRoute, categories = [], big }
   const [editHome, setEditHome] = useState(false);
   const info = ev ? leaveInfo(ev, now) : null;
 
+  const HomeField = () => (
+    !editHome ? (
+      <button className={"hub-origin" + (home ? "" : " unset")} onClick={() => setEditHome(true)}
+        title="出発地を登録・変更">
+        <Home size={13} /> {home || "出発地を登録"}
+      </button>
+    ) : (
+      <input
+        className="hub-origin-input" autoFocus defaultValue={home}
+        placeholder="駅名・地名（例：田端駅）"
+        onBlur={(e) => { setHome(e.target.value.trim() || home); setEditHome(false); }}
+        onKeyDown={(e) => { if (e.key === "Enter") { setHome(e.target.value.trim() || home); setEditHome(false); } }}
+      />
+    )
+  );
+
   if (!ev || !info) {
     return (
       <div className={"hub-gate empty" + (big ? " big" : "")}>
         <div className="hub-gate-eyebrow">出発ゲート</div>
         <div className="hub-gate-empty">次に出かける予定はありません。ゆっくりどうぞ。</div>
+        <div className="hub-gate-route" style={{ marginTop: 10 }}>
+          <HomeField />
+          {!home && <span className="hub-gate-hint">← いつもの出発地を登録しておくと、出発時刻を計算できます</span>}
+        </div>
       </div>
     );
   }
@@ -1249,17 +1261,7 @@ function DepartureGate({ ev, now, home, setHome, onRoute, categories = [], big }
             {ev.title}
           </div>
           <div className="hub-gate-route">
-            {!editHome ? (
-              <button className="hub-origin" onClick={() => setEditHome(true)} title="出発地を変更">
-                <Home size={13} /> {home}
-              </button>
-            ) : (
-              <input
-                className="hub-origin-input" autoFocus defaultValue={home}
-                onBlur={(e) => { setHome(e.target.value || home); setEditHome(false); }}
-                onKeyDown={(e) => { if (e.key === "Enter") { setHome(e.target.value || home); setEditHome(false); } }}
-              />
-            )}
+            <HomeField />
             <ArrowRight size={14} className="hub-arrow" />
             <span className="hub-dest"><MapPin size={13} /> {ev.location || "行き先未設定"}</span>
           </div>
@@ -1782,21 +1784,20 @@ function ManualForm({ defaultDate, initial, home, categories = [], onSubmit, onC
     title: "", date: defaultDate, start: "", end: "", location: "", travelMin: 30, remind: 30, repeat: "none", cat: DEFAULT_CAT, notes: "",
   });
   const [asTemplate, setAsTemplate] = useState(false);
-  const [lk, setLk] = useState({ state: "idle", transit: null, driving: null });
+  const [lk, setLk] = useState({ state: "idle", transit: null });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
 
+  /* 電車・バスの所要時間の「目安」をWeb検索で調べる（車の計算は精度が出ないため廃止） */
   const lookupTravel = async () => {
-    if (!f.location.trim()) return;
-    setLk({ state: "loading", transit: null, driving: null });
-    let transit = null, driving = null;
-    // 電車・バスの目安（Web検索）
-    try { const r = await suggestRoute(home || "現在地", f.location); transit = Number(r.totalMinutes) || null; } catch (e) {}
-    // 車の目安（地図ルーティング）
+    if (!f.location.trim() || !home) return;
+    setLk({ state: "loading", transit: null });
     try {
-      const [o, dst] = await Promise.all([geocodePlace(home || ""), geocodePlace(f.location)]);
-      if (o && dst) driving = await osrmMinutes(o, dst);
-    } catch (e) {}
-    setLk({ state: transit == null && driving == null ? "error" : "done", transit, driving });
+      const r = await suggestRoute(home, f.location);
+      const t = Number(r.totalMinutes) || null;
+      setLk(t ? { state: "done", transit: t } : { state: "error", transit: null });
+    } catch (e) {
+      setLk({ state: "error", transit: null });
+    }
   };
 
   const submit = () => {
@@ -1843,27 +1844,32 @@ function ManualForm({ defaultDate, initial, home, categories = [], onSubmit, onC
             </div>
           </div>
           <div className="hub-lookup">
-            <button className="hub-ghostbtn wide" onClick={lookupTravel}
-              disabled={!f.location.trim() || lk.state === "loading"}>
-              {lk.state === "loading"
-                ? <><Loader2 size={14} className="spin" /> 移動時間を調べています…</>
-                : <><Navigation size={14} /> {home || "現在地"} からの移動時間を調べる</>}
-            </button>
-            {lk.state === "error" && <div className="hub-note err">移動時間を取得できませんでした。手入力してください。</div>}
-            {lk.state === "done" && (
-              <div className="hub-lookup-res">
-                {lk.transit != null && (
-                  <button className="hub-lookup-opt" onClick={() => set("travelMin", lk.transit)}>
-                    <Train size={13} /> 電車・バス 約{lk.transit}分 <span className="hub-lookup-apply">反映</span>
-                  </button>
+            {!home ? (
+              <p className="hub-lookup-note">
+                移動時間を自動で調べるには、出発ゲートで出発地を登録してください。
+              </p>
+            ) : (
+              <>
+                <button className="hub-ghostbtn wide" onClick={lookupTravel}
+                  disabled={!f.location.trim() || lk.state === "loading"}>
+                  {lk.state === "loading"
+                    ? <><Loader2 size={14} className="spin" /> 調べています…</>
+                    : <><Train size={14} /> {home} からの所要時間を調べる（電車・バス）</>}
+                </button>
+                {lk.state === "error" && (
+                  <div className="hub-note err">所要時間を取得できませんでした。手入力してください。</div>
                 )}
-                {lk.driving != null && (
-                  <button className="hub-lookup-opt" onClick={() => set("travelMin", lk.driving)}>
-                    🚗 車 約{lk.driving}分 <span className="hub-lookup-apply">反映</span>
-                  </button>
+                {lk.state === "done" && lk.transit != null && (
+                  <div className="hub-lookup-res">
+                    <button className="hub-lookup-opt" onClick={() => set("travelMin", lk.transit)}>
+                      <Train size={13} /> 電車・バス 約{lk.transit}分 <span className="hub-lookup-apply">反映</span>
+                    </button>
+                    <p className="hub-lookup-note">
+                      ※ Web検索による目安です。正確な時刻は乗換案内で確認してください。
+                    </p>
+                  </div>
                 )}
-                <p className="hub-lookup-note">電車・バスはWeb検索、車は地図ルーティングによる目安です。</p>
-              </div>
+              </>
             )}
           </div>
           <label className="hub-di-remind">
@@ -2235,6 +2241,8 @@ const CSS = `
 .hub-origin{ background:#0f1621; border:1px solid #2a3648; color:#c3ccd8; padding:5px 10px;
   border-radius:8px; cursor:pointer; font-family:var(--sans); font-size:13px; }
 .hub-origin:hover{ border-color:var(--accent); }
+.hub-origin.unset{ border-style:dashed; border-color:var(--soon); color:#EBD9A8; }
+.hub-gate-hint{ font-size:11px; color:#7d8ba0; }
 .hub-origin-input{ background:#0f1621; border:1px solid var(--accent); color:#EDE7DA; padding:5px 10px;
   border-radius:8px; font-family:var(--sans); font-size:13px; width:150px; }
 .hub-arrow{ color:#5f6f84; }
