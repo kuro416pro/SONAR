@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import {
-  Calendar, Camera, Train, LayoutGrid, Smartphone, Monitor,
+  Calendar, Camera, Train, LayoutGrid,
   Plus, X, MapPin, ArrowRight, Trash2, ChevronLeft, ChevronRight,
   Check, Loader2, Clock, Home, Pencil, Image as ImageIcon,
   Bell, BellOff, BellRing, Volume2, VolumeX, CalendarPlus,
@@ -458,7 +458,6 @@ function downloadMonthICS(events, y, m) {
    メイン
    ============================================================ */
 export default function App() {
-  const [mode, setMode] = useState("auto"); // 'auto' | 'mobile' | 'desktop'
   const [theme, setTheme] = useState("light"); // 'light' | 'dark'
   const [vw, setVw] = useState(typeof window !== "undefined" ? window.innerWidth : 1200);
   const [tab, setTab] = useState("today"); // mobile tabs
@@ -680,8 +679,8 @@ export default function App() {
     setPlaces((prev) => (prev.some((x) => x.name === p.name) ? prev : [...prev, { id: uid(), ...p }]));
   const removePlace = (id) => setPlaces((prev) => prev.filter((p) => p.id !== id));
 
-  const isMobile = mode === "mobile" || (mode === "auto" && vw < 640);
-  const framedPhone = isMobile && vw >= 640; // 広い画面ではスマホ枠プレビュー、実機では全画面
+  const isMobile = vw < 640; // 端末の画面幅で自動判定（切り替えボタンは廃止）
+  const framedPhone = false; // 実機は常に全画面表示
 
   const darkCls = theme === "dark" ? " dark" : "";
   if (!SB_CONFIGURED) return <SetupScreen darkCls={darkCls} />;
@@ -739,27 +738,6 @@ export default function App() {
             <LogOut size={15} />
           </button>
         </div>
-        <div className="hub-modeswitch" role="group" aria-label="表示モード">
-          <button
-            className={"hub-modebtn" + (mode === "auto" ? " on" : "")}
-            onClick={() => setMode("auto")}
-            title="画面サイズに合わせて自動で切り替え"
-          >
-            自動
-          </button>
-          <button
-            className={"hub-modebtn" + (mode === "mobile" ? " on" : "")}
-            onClick={() => setMode("mobile")}
-          >
-            <Smartphone size={15} /> スマホ
-          </button>
-          <button
-            className={"hub-modebtn" + (mode === "desktop" ? " on" : "")}
-            onClick={() => setMode("desktop")}
-          >
-            <Monitor size={15} /> パソコン
-          </button>
-        </div>
       </header>
       )}
 
@@ -775,7 +753,7 @@ export default function App() {
           places={places} addPlace={addPlace} removePlace={removePlace}
           categories={categories} activeCats={activeCats} toggleCat={toggleCat} addCategory={addCategory} removeCategory={removeCategory}
           shortcuts={shortcuts} setShortcuts={setShortcuts} setHome={setHome}
-          setMode={setMode} notifyPerm={notifyPerm} toggleNotify={toggleNotify}
+          notifyPerm={notifyPerm} toggleNotify={toggleNotify}
           soundOn={soundOn} setSoundOn={setSoundOn} framed={framedPhone}
           theme={theme} setTheme={setTheme} synced={synced} signOut={signOut}
         />
@@ -1050,7 +1028,7 @@ function MobileShell(props) {
     setSelectedDate, view, setView, addEvents, removeEvent, updateEvent, onRoute,
     templates, addTemplate, removeTemplate, places, addPlace, removePlace,
     categories, activeCats, toggleCat, addCategory, removeCategory, shortcuts, setShortcuts,
-    setMode, notifyPerm, toggleNotify, soundOn, setSoundOn, framed, theme, setTheme, synced, signOut,
+    notifyPerm, toggleNotify, soundOn, setSoundOn, framed, theme, setTheme, synced, signOut,
   } = props;
   return (
     <div className={"hub-phonewrap" + (framed ? "" : " bare")}>
@@ -1077,9 +1055,6 @@ function MobileShell(props) {
             </button>
             <button className="hub-rbtn" onClick={signOut} aria-label="ログアウト">
               <LogOut size={15} />
-            </button>
-            <button className="hub-pb-pc" onClick={() => setMode("desktop")} title="パソコン表示に切り替え">
-              <Monitor size={14} /> PC
             </button>
           </div>
         </div>
