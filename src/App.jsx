@@ -14,7 +14,7 @@ import {
    （Supabase → Project Settings → API で確認）
    ============================================================ */
 const SUPABASE_URL = "https://qyrmhpehrsurzskmvppn.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_JhpfS3QiuSyVGlAkttrE9g_Z83EOAV7";
+const SUPABASE_ANON_KEY = "sb_publishable_JhpfS3QiuSyVG1AkttrE9g_Z83EOAV7";
 const SB_CONFIGURED =
   /^https:\/\/.+\.supabase\.co/.test(SUPABASE_URL) &&
   !!SUPABASE_ANON_KEY && !SUPABASE_ANON_KEY.startsWith("YOUR");
