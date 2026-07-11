@@ -490,7 +490,7 @@ export default function App() {
       return next.length ? next : remaining.map((c) => c.id);
     });
   };
-  const [home, setHome] = useState("さいたま新都心駅");
+  const [home, setHome] = useState("");
   const [selectedDate, setSelectedDate] = useState(t0);
   const [view, setView] = useState({ y: today.getFullYear(), m: today.getMonth() });
 
@@ -1114,6 +1114,19 @@ function DepartureGate({ ev, now, home, setHome, onRoute, categories = [], big }
     return (
       <div className={"hub-gate empty" + (big ? " big" : "")}>
         <div className="hub-gate-eyebrow">出発ゲート</div>
+        <div className="hub-gate-homeset">
+          <span className="hub-homeset-label"><Home size={13} /> 出発地</span>
+          {home && !editHome ? (
+            <button className="hub-origin" onClick={() => setEditHome(true)} title="出発地を変更">{home}</button>
+          ) : (
+            <input
+              className="hub-origin-input" autoFocus={editHome} defaultValue={home}
+              placeholder="出発地を入力（例：新宿駅）"
+              onBlur={(e) => { setHome(e.target.value.trim()); setEditHome(false); }}
+              onKeyDown={(e) => { if (e.key === "Enter") { setHome(e.target.value.trim()); setEditHome(false); } }}
+            />
+          )}
+        </div>
         <div className="hub-gate-empty">次に出かける予定はありません。ゆっくりどうぞ。</div>
       </div>
     );
@@ -1139,15 +1152,16 @@ function DepartureGate({ ev, now, home, setHome, onRoute, categories = [], big }
             {ev.title}
           </div>
           <div className="hub-gate-route">
-            {!editHome ? (
+            {home && !editHome ? (
               <button className="hub-origin" onClick={() => setEditHome(true)} title="出発地を変更">
                 <Home size={13} /> {home}
               </button>
             ) : (
               <input
-                className="hub-origin-input" autoFocus defaultValue={home}
-                onBlur={(e) => { setHome(e.target.value || home); setEditHome(false); }}
-                onKeyDown={(e) => { if (e.key === "Enter") { setHome(e.target.value || home); setEditHome(false); } }}
+                className="hub-origin-input" autoFocus={editHome} defaultValue={home}
+                placeholder="出発地を入力（例：新宿駅）"
+                onBlur={(e) => { setHome(e.target.value.trim()); setEditHome(false); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { setHome(e.target.value.trim()); setEditHome(false); } }}
               />
             )}
             <ArrowRight size={14} className="hub-arrow" />
@@ -2107,6 +2121,9 @@ const CSS = `
 .hub-countdown{ font-size:15px; font-weight:700; color:#F5F0E4; margin-top:8px; }
 .hub-traveltag{ font-size:11px; color:#7d8ba0; font-family:var(--mono); letter-spacing:.02em; }
 .hub-gate.empty .hub-gate-empty{ font-size:15px; color:#9aa6b6; padding:8px 0 4px; }
+.hub-gate-homeset{ display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-bottom:6px; }
+.hub-homeset-label{ display:inline-flex; align-items:center; gap:5px; font-size:12px; color:#8ea0b6; }
+.hub-gate-homeset .hub-origin-input{ width:190px; }
 
 /* ---- レイアウト ---- */
 .hub-desk{ padding:0 0 40px; }
