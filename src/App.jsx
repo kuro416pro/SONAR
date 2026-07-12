@@ -2314,17 +2314,15 @@ const CSS = `
 .hub-phonewrap{ display:flex; justify-content:center; padding:26px 16px 40px; }
 /* 実機（スマホ）では枠を外して全画面に広げる */
 .hub-phonewrap.bare{ padding:0; display:block; }
-.hub-phone.bare{ max-width:none; width:100%; height:auto; min-height:100vh; min-height:100dvh;
-  max-height:none; overflow:visible; border:0; border-radius:0; box-shadow:none; }
-.hub-phone.bare .hub-phonescroll{ overflow:visible; }
-.hub-phone.bare .hub-phonebar{ position:sticky; top:0; z-index:15; }
-.hub-phone.bare .hub-tabbar{ position:sticky; bottom:0; z-index:15;
-  padding-bottom:env(safe-area-inset-bottom, 0px); }
+/* 実機は画面ぴったりに固定し、上下バーは固定・中央だけスクロール */
+.hub-phone.bare{ max-width:none; width:100%; height:100vh; height:100dvh; max-height:none;
+  border:0; border-radius:0; box-shadow:none; }
+.hub-phone.bare .hub-tabbar{ padding-bottom:env(safe-area-inset-bottom, 0px); }
 .hub-phone.bare .hub-toasts{ top:60px; }
 .hub-phone{ width:100%; max-width:400px; height:760px; max-height:82vh; background:var(--paper);
   border:10px solid var(--ink); border-radius:38px; box-shadow:0 24px 60px rgba(20,28,42,.3);
   overflow:hidden; display:flex; flex-direction:column; position:relative; }
-.hub-phonescroll{ flex:1 1 auto; overflow-y:auto; overscroll-behavior:contain; }
+.hub-phonescroll{ flex:1 1 auto; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
 .hub-phonebar{ flex:0 0 auto; display:flex; align-items:center; justify-content:space-between; gap:8px;
   background:var(--ink); color:#EDE7DA; padding:11px 14px; border-bottom:1px solid #0d141e; }
 .hub-phonebar .hub-logo{ font-size:16px; }
