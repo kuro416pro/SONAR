@@ -2315,7 +2315,7 @@ const CSS = `
 /* 実機（スマホ）では枠を外して全画面に広げる */
 .hub-phonewrap.bare{ padding:0; display:block; }
 .hub-phone.bare{ max-width:none; width:100%; height:auto; min-height:100vh; min-height:100dvh;
-  border:0; border-radius:0; box-shadow:none; }
+  max-height:none; overflow:visible; border:0; border-radius:0; box-shadow:none; }
 .hub-phone.bare .hub-phonescroll{ overflow:visible; }
 .hub-phone.bare .hub-phonebar{ position:sticky; top:0; z-index:15; }
 .hub-phone.bare .hub-tabbar{ position:sticky; bottom:0; z-index:15;
