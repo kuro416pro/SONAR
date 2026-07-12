@@ -1860,7 +1860,7 @@ function ShiftImport({ myName, setMyName, shiftMap, setShiftMap, templates, impo
           <div className="hub-form-fields">
             <label className="hub-di-remind" style={{ alignItems: "flex-start", flexDirection: "column", gap: 6 }}>
               <span>シフト表での自分の名前</span>
-              <input className="hub-di" placeholder="例：斉藤" value={name}
+              <input className="hub-di" placeholder="" value={name}
                 onChange={(e) => setName(e.target.value)} autoFocus />
             </label>
             <p className="hub-shift-note">
@@ -1870,7 +1870,7 @@ function ShiftImport({ myName, setMyName, shiftMap, setShiftMap, templates, impo
             </p>
             {templates.length === 0 && (
               <div className="hub-note loading">
-                記号（A/B/C など）を使う場合は、先に「よく使う予定」を登録すると割り当てられます（例：<b>楽天A</b>）。時刻が直接書かれた表なら、そのまま反映できます。
+                記号（A/B/C など）を使う場合は、先に「よく使う予定」を登録すると割り当てられます。時刻が直接書かれた表なら、そのまま反映できます。
               </div>
             )}
             {error && <div className="hub-note err">{error}</div>}
