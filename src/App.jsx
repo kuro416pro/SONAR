@@ -89,6 +89,20 @@ const eventStart = (ev) => {
   const [hh, mm] = ev.start.split(":").map(Number);
   return new Date(y, m - 1, dd, hh, mm);
 };
+/* シフトのセル文字列が時刻（例 "9:00-18:00" / "9-18" / "10:00〜19:00" / "9:00"）なら
+   { start:"HH:MM", end:"HH:MM"|"" } を返す。時刻でなければ null */
+function parseShiftTime(code) {
+  const s = String(code || "").replace(/[〜～~]/g, "-").replace(/\s/g, "");
+  const range = s.match(/^(\d{1,2})(?::(\d{2}))?-(\d{1,2})(?::(\d{2}))?$/);
+  if (range && Number(range[1]) <= 24 && Number(range[3]) <= 24) {
+    return { start: `${pad(Number(range[1]))}:${range[2] || "00"}`, end: `${pad(Number(range[3]))}:${range[4] || "00"}` };
+  }
+  const single = s.match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (single && Number(single[1]) <= 24) {
+    return { start: `${pad(Number(single[1]))}:${single[2] || "00"}`, end: "" };
+  }
+  return null;
+}
 const fmtClock = (d) =>
   `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 const WD = ["日", "月", "火", "水", "木", "金", "土"];
@@ -181,7 +195,34 @@ function leaveInfo(ev, now) {
 const yahooUrl = (from, to) =>
   `https://transit.yahoo.co.jp/search/result?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
 
-/* ---------- 画像から予定を抽出（Claude API） ---------- */
+/* ---------- Claude 画像認識（サーバー関数 /api/claude 経由・キーは出さない） ---------- */
+const CLAUDE_MODEL = "claude-opus-4-8";
+async function callClaude(body) {
+  const res = await fetch("/api/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || "api");
+  const text = (data.content || [])
+    .filter((b) => b.type === "text")
+    .map((b) => b.text)
+    .join("\n");
+  return text;
+}
+/* 本文中のJSON部分を取り出してパース */
+function parseJsonLoose(text) {
+  const clean = String(text || "").replace(/```json/g, "").replace(/```/g, "").trim();
+  try { return JSON.parse(clean); }
+  catch (e) {
+    const m = clean.match(/[[{][\s\S]*[\]}]/);
+    if (m) return JSON.parse(m[0]);
+    throw e;
+  }
+}
+
+/* ---------- 画像から予定を抽出（チラシ・チケットなど） ---------- */
 async function extractEventsFromImage(base64, mediaType) {
   const prompt =
     "この画像はチラシ・チケット・案内・スクリーンショットなど予定に関するものです。" +
@@ -189,32 +230,52 @@ async function extractEventsFromImage(base64, mediaType) {
     '各要素の形式: {"title": string, "date": "YYYY-MM-DD"|null, "start": "HH:MM"|null, ' +
     '"end": "HH:MM"|null, "location": string|null, "notes": string|null}。' +
     "読み取れない項目はnull。年が不明な場合は今年（" + new Date().getFullYear() + "）とみなす。";
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1000,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
-            { type: "text", text: prompt },
-          ],
-        },
+  const text = await callClaude({
+    model: CLAUDE_MODEL,
+    max_tokens: 1000,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+        { type: "text", text: prompt },
       ],
-    }),
+    }],
   });
-  if (!res.ok) throw new Error("api");
-  const data = await res.json();
-  const text = (data.content || [])
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
-  const clean = text.replace(/```json/g, "").replace(/```/g, "").trim();
-  const parsed = JSON.parse(clean);
+  const parsed = parseJsonLoose(text);
   return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+/* ---------- シフト表の画像から「自分の行」を抽出 ----------
+   返り値: { year, month, days: [{ day, code }] }（codeは空欄ならnull） */
+async function extractShiftFromImage(base64, mediaType, name) {
+  const prompt =
+    "これは月間の勤務シフト表です。" +
+    `「${name}」という名前の人の行を1つ見つけてください。` +
+    "ヘッダーから対象の年と月を読み取ってください。" +
+    "その人の各日（1日〜月末）のセルの中身を、書かれているとおりに抜き出してください。" +
+    "記号（A/B/C/休/研修 など）でも、時刻（例 9:00-18:00、9-18、10:00〜19:00）でも、そのままの文字列を code に入れてください。" +
+    "空欄のセルは null。前置き・説明・Markdownは一切不要、JSONのみを返してください。" +
+    '形式: {"year":整数,"month":整数,"found":true/false,' +
+    '"days":[{"day":整数,"code":"記号 or null"}, ...]}。' +
+    "対象の名前が見つからない場合は found を false にしてください。";
+  const text = await callClaude({
+    model: CLAUDE_MODEL,
+    max_tokens: 2000,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image", source: { type: "base64", media_type: mediaType, data: base64 } },
+        { type: "text", text: prompt },
+      ],
+    }],
+  });
+  const parsed = parseJsonLoose(text);
+  return {
+    year: Number(parsed.year) || new Date().getFullYear(),
+    month: Number(parsed.month) || new Date().getMonth() + 1,
+    found: parsed.found !== false,
+    days: Array.isArray(parsed.days) ? parsed.days : [],
+  };
 }
 
 /* ---------- 天気（Open-Meteo：APIキー不要・CORS対応） ---------- */
@@ -491,6 +552,8 @@ export default function App() {
     });
   };
   const [home, setHome] = useState("");
+  const [myName, setMyName] = useState("");        // シフト表で自分の行を特定する名前
+  const [shiftMap, setShiftMap] = useState({});    // シフト記号 -> テンプレートID の対応表
   const [selectedDate, setSelectedDate] = useState(t0);
   const [view, setView] = useState({ y: today.getFullYear(), m: today.getMonth() });
 
@@ -538,6 +601,8 @@ export default function App() {
     if (Array.isArray(d.categories) && d.categories.length) setCategories(d.categories);
     if (Array.isArray(d.activeCats)) setActiveCats(d.activeCats);
     if (typeof d.home === "string") setHome(d.home);
+    if (typeof d.myName === "string") setMyName(d.myName);
+    if (d.shiftMap && typeof d.shiftMap === "object") setShiftMap(d.shiftMap);
     if (d.theme === "dark" || d.theme === "light") setTheme(d.theme);
   };
 
@@ -588,7 +653,7 @@ export default function App() {
     if (!session || !loadedRef.current || synced === false) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
-      const payload = { events, templates, places, shortcuts, categories, activeCats, home, theme };
+      const payload = { events, templates, places, shortcuts, categories, activeCats, home, myName, shiftMap, theme };
       try {
         try { await sbSave(sessionRef.current, payload); }
         catch (e) {
@@ -598,7 +663,7 @@ export default function App() {
         setSynced(true);
       } catch (e) { setSynced(false); }
     }, 700);
-  }, [events, templates, places, shortcuts, categories, activeCats, home, theme, session]);
+  }, [events, templates, places, shortcuts, categories, activeCats, home, myName, shiftMap, theme, session]);
 
   const signOut = () => {
     applySession(null);
@@ -606,6 +671,7 @@ export default function App() {
     // 表示は初期化（クラウド側は消さない）
     setEvents([]); setTemplates([]); setPlaces([]);
     setShortcuts(seedShortcuts); setCategories(seedCategories); setActiveCats(seedCategories.map((c) => c.id));
+    setMyName(""); setShiftMap({});
   };
 
   /* リマインド発火：毎秒スキャンし、到来した通知を鳴らす（重複は firedRef で防止） */
@@ -654,15 +720,23 @@ export default function App() {
   }, [events, now, activeCats]);
 
   const addEvents = (list) => setEvents((prev) => [...prev, ...list]);
+  /* シフト取込：同じ年月の「シフト由来」の予定を消してから入れ直す（重複防止・上書き） */
+  const importShiftMonth = (year, month, list) => {
+    const prefix = `${year}-${pad(month)}-`;
+    setEvents((prev) => [
+      ...prev.filter((e) => !(e.source === "shift" && String(e.date || "").startsWith(prefix))),
+      ...list,
+    ]);
+  };
   const removeEvent = (id) => setEvents((prev) => prev.filter((e) => e.id !== id));
   const updateEvent = (id, patch) =>
     setEvents((prev) => prev.map((e) => (e.id === id ? { ...e, ...patch } : e)));
 
-  /* テンプレート（よく使う予定）：日付・end・id を落として登録。重複は無視 */
+  /* テンプレート（よく使う予定）：日付・id を落として登録。重複は無視 */
   const addTemplate = (src) => {
     const tpl = {
       id: uid(), title: (src.title || "").trim() || "（無題の予定）",
-      start: src.start || "", location: src.location || "",
+      start: src.start || "", end: src.end || "", location: src.location || "",
       travelMin: Number(src.travelMin) || 0, remind: src.remind == null ? 30 : Number(src.remind),
       repeat: src.repeat || "none", cat: src.cat || DEFAULT_CAT, notes: src.notes || "",
     };
@@ -750,6 +824,7 @@ export default function App() {
           view={view} setView={setView} addEvents={addEvents} removeEvent={removeEvent}
           updateEvent={updateEvent} onRoute={setRouteEvent}
           templates={templates} addTemplate={addTemplate} removeTemplate={removeTemplate}
+          myName={myName} setMyName={setMyName} shiftMap={shiftMap} setShiftMap={setShiftMap} importShift={importShiftMonth}
           places={places} addPlace={addPlace} removePlace={removePlace}
           categories={categories} activeCats={activeCats} toggleCat={toggleCat} addCategory={addCategory} removeCategory={removeCategory}
           shortcuts={shortcuts} setShortcuts={setShortcuts} setHome={setHome}
@@ -764,6 +839,7 @@ export default function App() {
           view={view} setView={setView} addEvents={addEvents} removeEvent={removeEvent}
           updateEvent={updateEvent} onRoute={setRouteEvent}
           templates={templates} addTemplate={addTemplate} removeTemplate={removeTemplate}
+          myName={myName} setMyName={setMyName} shiftMap={shiftMap} setShiftMap={setShiftMap} importShift={importShiftMonth}
           places={places} addPlace={addPlace} removePlace={removePlace}
           categories={categories} activeCats={activeCats} toggleCat={toggleCat} addCategory={addCategory} removeCategory={removeCategory}
           shortcuts={shortcuts} setShortcuts={setShortcuts}
@@ -985,7 +1061,8 @@ function DesktopShell(props) {
   const {
     now, gateEvent, home, setHome, events, selectedDate, setSelectedDate,
     view, setView, addEvents, removeEvent, updateEvent, onRoute,
-    templates, addTemplate, removeTemplate, places, addPlace, removePlace,
+    templates, addTemplate, removeTemplate, myName, setMyName, shiftMap, setShiftMap, importShift,
+    places, addPlace, removePlace,
     categories, activeCats, toggleCat, addCategory, removeCategory, shortcuts, setShortcuts,
   } = props;
   return (
@@ -1004,6 +1081,7 @@ function DesktopShell(props) {
             now={now} selectedDate={selectedDate} events={events}
             addEvents={addEvents} removeEvent={removeEvent} updateEvent={updateEvent} home={home} onRoute={onRoute}
             templates={templates} addTemplate={addTemplate} removeTemplate={removeTemplate}
+            myName={myName} setMyName={setMyName} shiftMap={shiftMap} setShiftMap={setShiftMap} importShift={importShift}
             categories={categories} activeCats={activeCats}
           />
         </section>
@@ -1026,7 +1104,8 @@ function MobileShell(props) {
   const {
     tab, setTab, now, gateEvent, home, setHome, events, selectedDate,
     setSelectedDate, view, setView, addEvents, removeEvent, updateEvent, onRoute,
-    templates, addTemplate, removeTemplate, places, addPlace, removePlace,
+    templates, addTemplate, removeTemplate, myName, setMyName, shiftMap, setShiftMap, importShift,
+    places, addPlace, removePlace,
     categories, activeCats, toggleCat, addCategory, removeCategory, shortcuts, setShortcuts,
     notifyPerm, toggleNotify, soundOn, setSoundOn, framed, theme, setTheme, synced, signOut,
   } = props;
@@ -1066,6 +1145,7 @@ function MobileShell(props) {
                 now={now} selectedDate={selectedDate} events={events}
                 addEvents={addEvents} removeEvent={removeEvent} updateEvent={updateEvent} home={home} onRoute={onRoute}
                 templates={templates} addTemplate={addTemplate} removeTemplate={removeTemplate}
+                myName={myName} setMyName={setMyName} shiftMap={shiftMap} setShiftMap={setShiftMap} importShift={importShift}
                 categories={categories} activeCats={activeCats} compact
               />
             </>
@@ -1343,7 +1423,8 @@ function CalendarPanel({ events, view, setView, selectedDate, setSelectedDate, o
    選択日の予定 ＋ 写真取り込み ＋ 手入力
    ============================================================ */
 function DayPanel({ now, selectedDate, events, addEvents, removeEvent, updateEvent, home, onRoute,
-  templates, addTemplate, removeTemplate, categories = [], activeCats = [], compact }) {
+  templates, addTemplate, removeTemplate, myName, setMyName, shiftMap, setShiftMap, importShift,
+  categories = [], activeCats = [], compact }) {
   const [drafts, setDrafts] = useState([]);     // 写真から抽出した下書き
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -1351,12 +1432,13 @@ function DayPanel({ now, selectedDate, events, addEvents, removeEvent, updateEve
   const [editing, setEditing] = useState(null); // 編集中のマスター予定
   const [manageTpl, setManageTpl] = useState(false); // テンプレ削除モード
   const [delId, setDelId] = useState(null);          // 繰り返し予定の削除確認
+  const [showShift, setShowShift] = useState(false); // シフト表取込モーダル
   const fileRef = useRef(null);
 
   /* テンプレートを選択日に追加 */
   const addFromTemplate = (tpl) => {
     addEvents([{
-      id: uid(), title: tpl.title, date: selectedDate, start: tpl.start || "", end: "",
+      id: uid(), title: tpl.title, date: selectedDate, start: tpl.start || "", end: tpl.end || "",
       location: tpl.location || "", travelMin: Number(tpl.travelMin) || 0,
       remind: tpl.remind == null ? 30 : Number(tpl.remind), repeat: tpl.repeat || "none",
       cat: tpl.cat || DEFAULT_CAT, notes: tpl.notes || "", source: "template",
@@ -1430,12 +1512,23 @@ function DayPanel({ now, selectedDate, events, addEvents, removeEvent, updateEve
           <button className="hub-primary" onClick={() => fileRef.current?.click()}>
             <Camera size={15} /> 写真から追加
           </button>
+          <button className="hub-ghostbtn" onClick={() => setShowShift(true)}>
+            <LayoutGrid size={15} /> シフト表
+          </button>
           <button className="hub-ghostbtn" onClick={() => setShowForm((v) => !v)}>
             <Plus size={15} /> 手入力
           </button>
         </div>
       </div>
       <input ref={fileRef} type="file" accept="image/*" hidden onChange={onFile} />
+
+      {showShift && (
+        <ShiftImport
+          myName={myName} setMyName={setMyName} shiftMap={shiftMap} setShiftMap={setShiftMap}
+          templates={templates} importShift={importShift} categories={categories}
+          onClose={() => setShowShift(false)}
+        />
+      )}
 
       {loading && (
         <div className="hub-note loading">
@@ -1648,6 +1741,186 @@ function DayPanel({ now, selectedDate, events, addEvents, removeEvent, updateEve
                 )}
               </div>
             ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   シフト表から取り込む（自分の行 → 記号 → テンプレートを各日に反映）
+   ============================================================ */
+const SHIFT_TIME_VAL = "__time__"; // 「セルの時刻をそのまま反映」を表す特別な値
+function ShiftImport({ myName, setMyName, shiftMap, setShiftMap, templates, importShift, categories = [], onClose }) {
+  const [name, setName] = useState(myName || "");
+  const [step, setStep] = useState("form"); // form | loading | map
+  const [error, setError] = useState("");
+  const [extracted, setExtracted] = useState(null); // { year, month, days, found }
+  const [localMap, setLocalMap] = useState({});      // code -> templateId | ""
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const onFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const nm = name.trim();
+    if (!nm) { setError("先に「自分の名前」を入力してください。"); return; }
+    setMyName(nm);
+    setError(""); setStep("loading");
+    try {
+      const base64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result).split(",")[1]);
+        r.onerror = () => rej(new Error("read"));
+        r.readAsDataURL(file);
+      });
+      const data = await extractShiftFromImage(base64, file.type || "image/jpeg", nm);
+      // 検出された記号（空欄以外）を一意に集計
+      const codes = {};
+      for (const d of data.days || []) {
+        const code = d.code == null ? "" : String(d.code).trim();
+        if (!code) continue;
+        codes[code] = (codes[code] || 0) + 1;
+      }
+      const init = {};
+      Object.keys(codes).forEach((c) => {
+        // 保存済みの対応を優先。無ければ時刻っぽい記号は「時刻そのまま」を既定に
+        init[c] = (c in shiftMap) ? shiftMap[c] : (parseShiftTime(c) ? SHIFT_TIME_VAL : "");
+      });
+      setLocalMap(init);
+      setExtracted({ ...data, codes });
+      setStep("map");
+    } catch (err) {
+      setError("読み取れませんでした。写真を撮り直すか、名前をご確認ください。");
+      setStep("form");
+    } finally {
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const codeList = extracted ? Object.keys(extracted.codes) : [];
+  const setCode = (code, tid) => setLocalMap((p) => ({ ...p, [code]: tid }));
+
+  // 反映される予定を組み立てる
+  const buildEvents = () => {
+    const y = extracted.year, m = extracted.month;
+    const out = [];
+    for (const d of extracted.days || []) {
+      const code = d.code == null ? "" : String(d.code).trim();
+      const day = Number(d.day);
+      if (!code || !day) continue;
+      const val = localMap[code];
+      if (!val) continue;
+      const date = `${y}-${pad(m)}-${pad(day)}`;
+      if (val === SHIFT_TIME_VAL) {
+        // セルの時刻をそのまま予定に（テンプレ不要）
+        const t = parseShiftTime(code);
+        if (!t) continue;
+        out.push({
+          id: uid(), title: "勤務", date, start: t.start, end: t.end, location: "",
+          travelMin: 0, remind: 30, repeat: "none", cat: DEFAULT_CAT, notes: "", source: "shift",
+        });
+        continue;
+      }
+      const tpl = templates.find((t) => t.id === val);
+      if (!tpl) continue;
+      out.push({
+        id: uid(), title: tpl.title, date,
+        start: tpl.start || "", end: tpl.end || "", location: tpl.location || "",
+        travelMin: Number(tpl.travelMin) || 0, remind: tpl.remind == null ? 30 : Number(tpl.remind),
+        repeat: "none", cat: tpl.cat || DEFAULT_CAT, notes: tpl.notes || "", source: "shift",
+      });
+    }
+    return out;
+  };
+  const pending = extracted ? buildEvents() : [];
+
+  const confirm = () => {
+    // 同じ年月のシフト由来の予定を消してから入れ直す（重複防止・上書き）
+    importShift(extracted.year, extracted.month, pending);
+    setShiftMap({ ...shiftMap, ...localMap }); // 対応表を学習（次回から自動）
+    onClose();
+  };
+
+  return (
+    <div className="hub-modal-backdrop" onClick={onClose}>
+      <div className="hub-modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="シフト表から取り込む">
+        <div className="hub-modal-head">
+          <div className="hub-eyebrow">シフト表から取り込む</div>
+          <button className="hub-modal-close" onClick={onClose} aria-label="閉じる"><X size={18} /></button>
+        </div>
+
+        {step !== "map" && (
+          <div className="hub-form-fields">
+            <label className="hub-di-remind" style={{ alignItems: "flex-start", flexDirection: "column", gap: 6 }}>
+              <span>シフト表での自分の名前</span>
+              <input className="hub-di" placeholder="例：斉藤" value={name}
+                onChange={(e) => setName(e.target.value)} autoFocus />
+            </label>
+            <p className="hub-shift-note">
+              この名前の行を読み取り、各日のセル（A/B/C などの記号や、9:00-18:00 などの時刻）を予定にします。
+              記号は下で「よく使う予定」に割り当て、時刻が直接書かれたセルはそのまま反映できます。
+              同じ月を取り込み直すと上書きされます（重複しません）。
+            </p>
+            {templates.length === 0 && (
+              <div className="hub-note loading">
+                記号（A/B/C など）を使う場合は、先に「よく使う予定」を登録すると割り当てられます（例：<b>楽天A</b>）。時刻が直接書かれた表なら、そのまま反映できます。
+              </div>
+            )}
+            {error && <div className="hub-note err">{error}</div>}
+            <input ref={fileRef} type="file" accept="image/*" hidden onChange={onFile} />
+            <button className="hub-primary full" onClick={() => fileRef.current?.click()}
+              disabled={!name.trim() || step === "loading"}>
+              {step === "loading"
+                ? <><Loader2 size={15} className="spin" /> シフト表を読み取っています…</>
+                : <><LayoutGrid size={15} /> シフト表の画像を選ぶ</>}
+            </button>
+          </div>
+        )}
+
+        {step === "map" && extracted && (
+          <div className="hub-form-fields">
+            {extracted.found === false && (
+              <div className="hub-note err">「{name}」の行が見つかりませんでした。名前をご確認ください。</div>
+            )}
+            <div className="hub-shift-month">{extracted.year}年 {extracted.month}月 のシフト</div>
+            <p className="hub-shift-note">各セルに、当てはめる「よく使う予定」を選んでください。時刻が書かれたセルは「⏱ 時刻をそのまま反映」が選べます。「登録しない」（休・希など）は取り込みません。</p>
+            {codeList.length === 0 ? (
+              <div className="hub-note err">シフト記号を読み取れませんでした。写真を撮り直してください。</div>
+            ) : (
+              <div className="hub-shift-rows">
+                {codeList.map((code) => (
+                  <div key={code} className="hub-shift-row">
+                    <span className="hub-shift-code">{code}</span>
+                    <span className="hub-shift-count">×{extracted.codes[code]}日</span>
+                    <select className="hub-di" value={localMap[code] || ""}
+                      onChange={(e) => setCode(code, e.target.value)}>
+                      <option value="">登録しない</option>
+                      {parseShiftTime(code) && (
+                        <option value={SHIFT_TIME_VAL}>⏱ 時刻をそのまま反映（勤務）</option>
+                      )}
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.title}{t.start ? `（${t.start}〜）` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="hub-primary full" onClick={confirm} disabled={pending.length === 0}>
+              <Check size={15} /> {pending.length}件の予定を追加
+            </button>
+            <button className="hub-ghostbtn wide" onClick={() => { setStep("form"); setExtracted(null); }}>
+              別の画像を選び直す
+            </button>
           </div>
         )}
       </div>
@@ -2504,6 +2777,17 @@ const CSS = `
 .hub-modal-ext{ font-size:11.5px; color:var(--muted); margin-top:14px; padding-top:12px; border-top:1px solid var(--line); }
 .hub-modal-ext a{ color:var(--accent); text-decoration:none; margin-left:10px; }
 .hub-modal-ext a:hover{ text-decoration:underline; }
+
+/* ---- シフト表取込 ---- */
+.hub-shift-note{ font-size:12px; color:var(--muted); line-height:1.6; margin:0; }
+.hub-shift-month{ font-family:var(--mono); font-size:15px; font-weight:700; letter-spacing:.03em; }
+.hub-shift-rows{ display:flex; flex-direction:column; gap:8px; }
+.hub-shift-row{ display:flex; align-items:center; gap:10px; }
+.hub-shift-code{ flex:0 0 auto; min-width:40px; text-align:center; font-family:var(--mono); font-size:15px; font-weight:700;
+  background:var(--ink); color:#EDE7DA; border-radius:8px; padding:6px 8px; }
+.hub-shift-count{ flex:0 0 auto; font-size:11px; color:var(--muted); font-family:var(--mono); min-width:42px; }
+.hub-shift-row .hub-di{ flex:1 1 auto; cursor:pointer; }
+.hub-root.dark .hub-shift-code{ background:#0F1822; color:var(--text); border:1px solid var(--line); }
 
 .hub-phone .hub-toasts{ position:absolute; top:56px; right:12px; left:12px; width:auto; }
 
